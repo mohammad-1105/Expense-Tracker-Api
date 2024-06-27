@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+export const emailSchema = z.object({
+  email: z.string({ message: "Why email is empty ?" }).email(),
+});
+
 export const registerUserSchema = z.object({
   username: z
     .string({ message: "why username is empty ?" })
@@ -18,7 +22,7 @@ export const registerUserSchema = z.object({
       message: "Full name is invalid",
     }),
 
-  email: z.string({ message: "Why email is empty ?" }).email(),
+  email: emailSchema,
   password: z
     .string({ message: "Why password is empty ?" })
     .min(8, { message: "password must be at least 8 characters" }),
