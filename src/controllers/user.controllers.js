@@ -2,10 +2,18 @@ import { asyncHandler } from "../utils/AsyncHandler.js";
 import UserModel from "../models/user.model.js";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
-import { registerUserSchema } from "../schemas/registerUserSchema.js";
+import {
+  emailSchema,
+  registerUserSchema,
+} from "../schemas/registerUserSchema.js";
 import { loginUserSchema } from "../schemas/loginUserSchema.js";
-import { changePasswordSchema } from "../schemas/changePasswordSchema.js";
+import {
+  changePasswordSchema,
+  newPassowrdSchema,
+} from "../schemas/changePasswordSchema.js";
 import { updateFullNameSchema } from "../schemas/updateFullNameSchema.js";
+import { sendEmail } from "../utils/mail.js";
+import { reset, verify } from "../constants.js";
 
 // Global functions
 const generateAccessAndRefreshAccessTokens = async (userId) => {
@@ -37,13 +45,13 @@ const registerUser = asyncHandler(async (req, res) => {
   const { username, fullName, email, password } = req.body;
 
   // validation with zod
-  const { error } = registerUserSchema.safeParse({
+  const { success, error } = registerUserSchema.safeParse({
     username,
     fullName,
     email,
     password,
   });
-  if (error) {
+  if (!success) {
     throw new ApiError(400, error.issues[0].message, []);
   }
 
@@ -65,6 +73,9 @@ const registerUser = asyncHandler(async (req, res) => {
   // save the user to db
   await newUser.save({ validateBeforeSave: false });
 
+  // send Email
+  await sendEmail(newUser.email, verify, newUser._id);
+
   // get the user
   const user = await UserModel.findById(newUser._id).select(
     "-password -refreshAccessToken"
@@ -76,7 +87,13 @@ const registerUser = asyncHandler(async (req, res) => {
   // send response
   return res
     .status(201)
-    .json(new ApiResponse(201, "User registered successfully", user));
+    .json(
+      new ApiResponse(
+        201,
+        "User registered successfully. Please verify your email.",
+        user
+      )
+    );
 });
 
 const loginUser = asyncHandler(async (req, res) => {
@@ -84,13 +101,13 @@ const loginUser = asyncHandler(async (req, res) => {
   const { username, email, password } = req.body;
 
   // validation with zod
-  const { error } = loginUserSchema.safeParse({
+  const { success, error } = loginUserSchema.safeParse({
     username,
     email,
     password,
   });
 
-  if (error) {
+  if (!success) {
     throw new ApiError(400, error.issues[0].message, []);
   }
 
@@ -189,7 +206,7 @@ const getUserProfile = asyncHandler(async (req, res) => {
 
   // Find user
   const user = await UserModel.findById(req.user._id).select(
-    "-password -refreshAccessToken"
+    "-password -refreshAccessToken -forgetPasswordToken -forgetPasswordTokenExpiry -emailVerificationToken -emailVerificationTokenExpiry"
   );
   if (!user) {
     throw new Error(404, "User not found", []);
@@ -211,9 +228,9 @@ const updateUserFullName = asyncHandler(async (req, res) => {
   const { fullName } = req.body;
 
   // validation with zod
-  const { error } = updateFullNameSchema.safeParse({fullName})
-  if(error){
-    throw new ApiError(400, error.issues[0].message, [])
+  const { success, error } = updateFullNameSchema.safeParse({ fullName });
+  if (!success) {
+    throw new ApiError(400, error.issues[0].message, []);
   }
 
   // Find user and update profile
@@ -265,11 +282,11 @@ const changePassword = asyncHandler(async (req, res) => {
   const { oldPassword, newPassword } = req.body;
 
   // validation with zod
-  const { error } = changePasswordSchema.safeParse({
+  const { success, error } = changePasswordSchema.safeParse({
     oldPassword,
     newPassword,
   });
-  if (error) {
+  if (!success) {
     throw new ApiError(400, error.issues[0].message, []);
   }
 
@@ -294,6 +311,116 @@ const changePassword = asyncHandler(async (req, res) => {
     .json(new ApiResponse(200, "Password changed successfully", []));
 });
 
+const verifyEmail = asyncHandler(async (req, res) => {
+  // get token from the request
+  const { token } = req.query;
+
+  if (!token) {
+    throw new ApiError(400, "Token is missing", []);
+  }
+
+  // find user by token
+  const user = await UserModel.findOne({
+    emailVerificationToken: token,
+    emailVerificationTokenExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, "Invalid or expired token", []);
+  }
+
+  // verify email
+  user.isEmailVerified = true;
+  user.emailVerificationToken = null;
+  user.emailVerificationTokenExpiry = null;
+  await user.save({ validateBeforeSave: false });
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Email verified successfully", []));
+});
+
+const forgetPasswordRequest = asyncHandler(async (req, res) => {
+  // get user email from request
+
+  const { email } = req.body;
+
+  // validation with zod
+  const { success, error } = emailSchema.safeParse({ email });
+  if (!success) {
+    throw new ApiError(400, error.issues[0].message, []);
+  }
+
+  // find user by email
+  const user = await UserModel.findOne({ email });
+
+  if (!user) {
+    throw new ApiError(404, "User doesn't exists with this email", []);
+  }
+
+  // send email
+  await sendEmail(email, reset, user._id);
+
+  // send response
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Password reset link sent to your email", []));
+});
+
+const resetForgottenPassword = asyncHandler(async (req, res) => {
+  // get token and new password from the request
+
+  const { token } = req.query;
+  const { newPassword } = req.body;
+
+  // validation with zod
+  const { success, error } = newPassowrdSchema.safeParse({
+    newPassword,
+  });
+  if (!success) {
+    throw new ApiError(400, error.issues[0].message, []);
+  }
+
+  // find user by token
+  const user = await UserModel.findOne({
+    forgetPasswordToken: token,
+    forgetPasswordTokenExpiry: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new ApiError(400, "Invalid or expired token", []);
+  }
+  console.log(user);
+  // update password
+  user.password = newPassword;
+  user.forgetPasswordToken = null;
+  user.forgetPasswordTokenExpiry = null;
+  await user.save({ validateBeforeSave: false });
+
+  // send response
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Password reset successfully", []));
+});
+
+const resendEmailVerification = asyncHandler(async (req, res) => {
+  // Ensure user is authenticated and available in req.user
+  if (!req.user || !req.user._id) {
+    throw new ApiError(401, "Unauthorized access", []);
+  }
+  const user = await UserModel.findById(req.user._id);
+  if (!user) {
+    throw new Error(404, "User not found", []);
+  }
+
+  // send Email
+  await sendEmail(user.email, verify, user._id);
+
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "Verification email sent successfully", []));
+});
+
 // Exports controllers
 export {
   registerUser,
@@ -303,5 +430,9 @@ export {
   getUserProfile,
   updateUserFullName,
   deleteUserAccount,
-  changePassword
+  changePassword,
+  verifyEmail,
+  forgetPasswordRequest,
+  resetForgottenPassword,
+  resendEmailVerification,
 };
