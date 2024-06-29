@@ -26,11 +26,15 @@ function shouldCompress(req, res) {
 
 // routes import 
 import { router as userRouter } from "./routes/user.routes.js"
+import { router as categoryRouter } from "./routes/category.routes.js"
+import { router as expenseRouter } from "./routes/expense.routes.js"
+
+
 
 // routes declaration
 app.use("/api/v1/users", userRouter)
-
-
+app.use("/api/v1/categories", categoryRouter)
+app.use("/api/v1/expenses", expenseRouter)
 
 
 // Custom JSON error handler middleware (define it after all routes)
